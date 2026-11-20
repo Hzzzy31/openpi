@@ -13,6 +13,7 @@ import flax.nnx as nnx
 from typing_extensions import override
 import tyro
 
+import openpi.ersi.g2 as g2
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
@@ -96,6 +97,9 @@ class DataConfig:
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
     # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
     datasets: Sequence[droid_rlds_dataset.RLDSDataset] = ()
+    # Optional local directory and video decoder for LeRobot datasets.
+    lerobot_root: str | None = None
+    video_backend: str | None = None
 
 
 class GroupFactory(Protocol):
@@ -222,6 +226,28 @@ class SimpleDataConfig(DataConfigFactory):
             self.create_base_config(assets_dirs, model_config),
             data_transforms=self.data_transforms(model_config),
             model_transforms=self.model_transforms(model_config),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotERSIG2DataConfig(DataConfigFactory):
+    repo_id: str = g2.LOCAL_REPO_ID
+    lerobot_root: str | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            lerobot_root=self.lerobot_root,
+            video_backend="pyav",
+            repack_transforms=_transforms.Group(inputs=[g2.DATASET_REPACK]),
+            data_transforms=_transforms.Group(
+                inputs=[g2.G2Inputs(), _transforms.DeltaActions(g2.DELTA_MASK)],
+                outputs=[_transforms.AbsoluteActions(g2.DELTA_MASK), g2.G2Outputs()],
+            ),
+            model_transforms=ModelTransformFactory()(model_config),
+            action_sequence_keys=(g2.ACTION_KEY,),
+            prompt_from_task=True,
         )
 
 
@@ -556,8 +582,27 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
 
+@dataclasses.dataclass(frozen=True)
+class ERSIG2TrainConfig(TrainConfig):
+    # The RSI service assigns an exact run directory for Orbax checkpoints.
+    output_dir: str | None = None
+
+    @property
+    def checkpoint_dir(self) -> pathlib.Path:
+        if self.output_dir is not None:
+            return pathlib.Path(self.output_dir).resolve()
+        return super().checkpoint_dir
+
+
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    ERSIG2TrainConfig(
+        name=g2.CONFIG_NAME,
+        model=pi0_config.Pi0Config(pi05=True, action_dim=32, action_horizon=g2.ACTION_HORIZON),
+        data=LeRobotERSIG2DataConfig(assets=AssetsConfig(asset_id=g2.ASSET_ID)),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        wandb_enabled=False,
+    ),
     #
     # Inference Aloha configs.
     #
