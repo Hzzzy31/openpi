@@ -1,6 +1,6 @@
 import dataclasses
-import functools
 import logging
+import pathlib
 import platform
 from typing import Any
 
@@ -16,6 +16,8 @@ import optax
 import tqdm_loggable.auto as tqdm
 import wandb
 
+from openpi.ersi import checkpoints as ersi_checkpoints
+from openpi.ersi import progress as ersi_progress
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
@@ -197,7 +199,7 @@ def train_step(
     return new_state, info
 
 
-def main(config: _config.TrainConfig):
+def main(config: _config.TrainConfig, *, progress_file: pathlib.Path | None = None):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
 
@@ -206,7 +208,8 @@ def main(config: _config.TrainConfig):
             f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}."
         )
 
-    jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
+    if not jax.config.jax_compilation_cache_dir:
+        jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
 
     rng = jax.random.key(config.seed)
     train_rng, init_rng = jax.random.split(rng)
@@ -239,7 +242,16 @@ def main(config: _config.TrainConfig):
     ]
     wandb.log({"camera_views": images_to_log}, step=0)
 
-    learning_rate = config.lr_schedule.create() if isinstance(config, _config.ERSIG2TrainConfig) else None
+    learning_rate = None
+    progress = None
+    retention = None
+    if isinstance(config, _config.ERSIG2TrainConfig):
+        learning_rate = config.lr_schedule.create()
+        progress = ersi_progress.TrainingProgress(
+            progress_file or config.checkpoint_dir / ersi_progress.FILENAME, config.log_interval
+        )
+        if not config.resume:
+            retention = ersi_checkpoints.TrainStateRetention(checkpoint_manager, config.norm_asset_id)
     train_state, train_state_sharding = init_train_state(
         config, init_rng, mesh, resume=resuming, learning_rate=learning_rate
     )
@@ -249,8 +261,15 @@ def main(config: _config.TrainConfig):
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 
+    def step_with_metrics(rng, state, batch):
+        next_state, info = train_step(config, rng, state, batch)
+        if learning_rate is not None:
+            # Match the zero-based count used by Optax for this update.
+            info["lr"] = learning_rate(state.step)
+        return next_state, info
+
     ptrain_step = jax.jit(
-        functools.partial(train_step, config),
+        step_with_metrics,
         in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         out_shardings=(train_state_sharding, replicated_sharding),
         donate_argnums=(1,),
@@ -265,27 +284,42 @@ def main(config: _config.TrainConfig):
     )
 
     infos = []
-    for step in pbar:
-        with sharding.set_mesh(mesh):
-            train_state, info = ptrain_step(train_rng, train_state, batch)
-        infos.append(info)
-        if step % config.log_interval == 0:
-            stacked_infos = common_utils.stack_forest(infos)
-            reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
-            info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-            if learning_rate is not None:
-                # Optax uses the zero-based update index as its schedule count.
-                info_str += f", lr={float(learning_rate(step)):.8e}"
-            pbar.write(f"Step {step}: {info_str}")
-            wandb.log(reduced_info, step=step)
-            infos = []
-        batch = next(data_iter)
+    try:
+        for step in pbar:
+            with sharding.set_mesh(mesh):
+                train_state, info = ptrain_step(train_rng, train_state, batch)
+            checkpoint_step = config.checkpoint_step_to_save(step, start_step)
+            reduced_info = None
+            if progress is not None:
+                reduced_info = progress.record(step + 1, info, train_state, checkpoint_due=checkpoint_step is not None)
+            else:
+                infos.append(info)
+                if step % config.log_interval == 0:
+                    stacked_infos = common_utils.stack_forest(infos)
+                    reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+                    infos.clear()
+            if reduced_info is not None:
+                info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items() if k != "lr")
+                if "lr" in reduced_info:
+                    info_str += f", lr={reduced_info['lr']:.8e}"
+                pbar.write(f"Step {step}: {info_str}")
+                wandb.log(reduced_info, step=step)
 
-        if (checkpoint_step := config.checkpoint_step_to_save(step, start_step)) is not None:
-            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, checkpoint_step)
-
-    logging.info("Waiting for checkpoint manager to finish")
-    checkpoint_manager.wait_until_finished()
+            if checkpoint_step is not None:
+                if retention is None:
+                    _checkpoints.save_state(checkpoint_manager, train_state, data_loader, checkpoint_step)
+                else:
+                    retention.save(train_state, data_loader, checkpoint_step)
+            elif retention is not None and reduced_info is not None:
+                retention.poll()
+            if step + 1 < config.num_train_steps:
+                batch = next(data_iter)
+    finally:
+        logging.info("Waiting for checkpoint manager to finish")
+        if retention is None:
+            checkpoint_manager.wait_until_finished()
+        else:
+            retention.wait_until_finished()
 
 
 if __name__ == "__main__":

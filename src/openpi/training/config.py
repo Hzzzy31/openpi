@@ -239,6 +239,7 @@ class LeRobotERSIG2DataConfig(DataConfigFactory):
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             lerobot_root=self.lerobot_root,
+            # This decoder was verified with the HEVC videos exported by ERSIBench.
             video_backend="pyav",
             repack_transforms=_transforms.Group(inputs=[g2.DATASET_REPACK]),
             data_transforms=_transforms.Group(
@@ -607,6 +608,12 @@ class ERSIG2TrainConfig(TrainConfig):
         if self.output_dir is not None:
             return pathlib.Path(self.output_dir).resolve()
         return super().checkpoint_dir
+
+    @property
+    def norm_asset_id(self) -> str:
+        if (asset_id := self.data.assets.asset_id) is None:
+            raise ValueError("The ERSI G2 config requires an explicit normalization asset ID.")
+        return asset_id
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -1047,3 +1054,12 @@ def get_config(config_name: str) -> TrainConfig:
         raise ValueError(f"Config '{config_name}' not found.{closest_str}")
 
     return _CONFIGS_DICT[config_name]
+
+
+def get_ersi_g2_config(config_name: str = g2.CONFIG_NAME) -> ERSIG2TrainConfig:
+    """Resolve the single model and joint layout supported by the ERSI G2 tools."""
+    if config_name != g2.CONFIG_NAME:
+        raise ValueError(f"ERSI G2 requires config {g2.CONFIG_NAME!r}, got {config_name!r}.")
+    config = get_config(config_name)
+    assert isinstance(config, ERSIG2TrainConfig)
+    return config

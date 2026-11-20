@@ -8,7 +8,6 @@ import pathlib
 from typing import cast
 
 from openpi.ersi import dataset
-from openpi.ersi import g2
 from openpi.training import config
 from openpi.training import optimizer
 from openpi.training import weight_loaders
@@ -24,15 +23,17 @@ def _params_dir(checkpoint: pathlib.Path) -> pathlib.Path:
     raise FileNotFoundError(f"No Orbax params found at {path}. Pass a checkpoint or its params directory.")
 
 
-def main() -> None:
-    base = cast(config.ERSIG2TrainConfig, config.get_config(g2.CONFIG_NAME))
+def main(argv: list[str] | None = None) -> None:
+    base = config.get_ersi_g2_config()
     schedule = cast(optimizer.CosineDecaySchedule, base.lr_schedule)
     adamw = cast(optimizer.AdamW, base.optimizer)
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dataset", type=pathlib.Path)
+    parser.add_argument("--config", choices=(base.name,), default=base.name)
     parser.add_argument("--assets-dir", type=pathlib.Path, required=True)
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--progress-file", type=pathlib.Path, help="Defaults to openpi_progress.json in the output dir.")
     parser.add_argument("--init-from", type=pathlib.Path, required=True)
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--batch-size", type=int, default=base.batch_size)
@@ -54,7 +55,7 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=base.num_workers)
     parser.add_argument("--fsdp-devices", type=int, default=base.fsdp_devices)
     parser.add_argument("--seed", type=int, default=base.seed)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if min(args.steps, args.batch_size, args.fsdp_devices) < 1:
         parser.error("steps, batch size and FSDP device count must be positive.")
@@ -78,7 +79,7 @@ def main() -> None:
 
     root = args.dataset.resolve()
     assets_dir = args.assets_dir.resolve()
-    stats = assets_dir / g2.ASSET_ID / "norm_stats.json"
+    stats = assets_dir / base.norm_asset_id / "norm_stats.json"
     if not stats.is_file():
         parser.error(f"Normalization stats are missing at {stats}. Run scripts.compute_ersi_norm_stats first.")
     if dataset.load_metadata(root).total_frames < args.batch_size:
@@ -93,7 +94,7 @@ def main() -> None:
         data=dataclasses.replace(
             base.data,
             lerobot_root=str(root),
-            assets=config.AssetsConfig(assets_dir=str(assets_dir), asset_id=g2.ASSET_ID),
+            assets=dataclasses.replace(base.data.assets, assets_dir=str(assets_dir)),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(str(_params_dir(args.init_from))),
         lr_schedule=dataclasses.replace(
@@ -119,7 +120,8 @@ def main() -> None:
         seed=args.seed,
     )
     logging.basicConfig()
-    train.main(train_config)
+    progress_file = args.progress_file.resolve() if args.progress_file is not None else None
+    train.main(train_config, progress_file=progress_file)
 
 
 if __name__ == "__main__":

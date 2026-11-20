@@ -12,14 +12,16 @@ from openpi import transforms
 from openpi.ersi import dataset
 from openpi.ersi import g2
 from openpi.shared import normalize
+from openpi.training import config
 
 
-def compute(root: pathlib.Path, assets_dir: pathlib.Path) -> None:
+def compute(root: pathlib.Path, assets_dir: pathlib.Path, config_name: str = g2.CONFIG_NAME) -> None:
+    train_config = config.get_ersi_g2_config(config_name)
     metadata = dataset.load_metadata(root)
     state_stats = normalize.RunningStats()
     action_stats = normalize.RunningStats()
     delta = transforms.DeltaActions(g2.DELTA_MASK)
-    offsets = np.arange(g2.ACTION_HORIZON)
+    offsets = np.arange(train_config.model.action_horizon)
     frames_per_batch = 256
 
     # The normalization uses only the two numeric columns. Match LeRobot's
@@ -43,7 +45,7 @@ def compute(root: pathlib.Path, assets_dir: pathlib.Path) -> None:
             action_stats.update(batch["actions"])
 
     stats = {"state": state_stats.get_statistics(), "actions": action_stats.get_statistics()}
-    output_dir = assets_dir / g2.ASSET_ID
+    output_dir = assets_dir / train_config.norm_asset_id
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output_dir) as tmp:
         normalize.save(tmp, stats)
@@ -52,12 +54,13 @@ def compute(root: pathlib.Path, assets_dir: pathlib.Path) -> None:
     print(f"Wrote {output}")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dataset", type=pathlib.Path)
+    parser.add_argument("--config", choices=(g2.CONFIG_NAME,), default=g2.CONFIG_NAME)
     parser.add_argument("--assets-dir", type=pathlib.Path, required=True)
-    args = parser.parse_args()
-    compute(args.dataset.resolve(), args.assets_dir.resolve())
+    args = parser.parse_args(argv)
+    compute(args.dataset.resolve(), args.assets_dir.resolve(), args.config)
 
 
 if __name__ == "__main__":

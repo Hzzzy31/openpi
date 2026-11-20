@@ -67,7 +67,7 @@ def save_state(
     state: training_utils.TrainState,
     data_loader: _data_loader.DataLoader,
     step: int,
-):
+) -> bool:
     def save_assets(directory: epath.Path):
         # Save the normalization stats.
         data_config = data_loader.data_config()
@@ -83,7 +83,7 @@ def save_state(
         "train_state": train_state,
         "params": {"params": params},
     }
-    checkpoint_manager.save(step, items)
+    return checkpoint_manager.save(step, items)
 
 
 def restore_state(
