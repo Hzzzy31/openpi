@@ -10,10 +10,17 @@ CONFIG_NAME = "openpi_pi05_g2_rel14"
 ASSET_ID = "g2_rel14"
 LOCAL_REPO_ID = "local/ersi-g2"
 ACTION_HORIZON = 50
-ARM_DIM = 14
-JOINT_DIM = 16
 STATE_KEY = "observation.state"
 ACTION_KEY = "action"
+
+# Joint names in ERSIBench's g2_omnipicker embodiment and LeRobot exporter order.
+ARM_JOINTS = (
+    *(f"idx2{joint}_arm_l_joint{joint}" for joint in range(1, 8)),
+    *(f"idx6{joint}_arm_r_joint{joint}" for joint in range(1, 8)),
+)
+JOINT_NAMES = (*ARM_JOINTS, "left_gripper", "right_gripper")
+ARM_DIM = len(ARM_JOINTS)
+JOINT_DIM = len(JOINT_NAMES)
 DELTA_MASK = transforms.make_bool_mask(ARM_DIM, -(JOINT_DIM - ARM_DIM))
 
 # Wire camera name, LeRobot feature and pi0.5 input name.

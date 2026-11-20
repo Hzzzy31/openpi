@@ -19,17 +19,12 @@ def load_metadata(root: pathlib.Path) -> LeRobotDatasetMetadata:
 
     features = info["features"]
     state, action = features[g2.STATE_KEY], features[g2.ACTION_KEY]
-    joints = state.get("names") or []
-    if (
-        state["shape"] != [g2.JOINT_DIM]
-        or action["shape"] != [g2.JOINT_DIM]
-        or state["dtype"] != "float32"
-        or action["dtype"] != "float32"
-        or len(joints) != g2.JOINT_DIM
-        or joints != action.get("names")
-        or joints[-2:] != ["left_gripper", "right_gripper"]
+    joint_names = list(g2.JOINT_NAMES)
+    if any(
+        feature["shape"] != [g2.JOINT_DIM] or feature["dtype"] != "float32" or feature.get("names") != joint_names
+        for feature in (state, action)
     ):
-        raise ValueError(f"{root}: expected the G2 joint layout (14 joints and two grippers).")
+        raise ValueError(f"{root}: expected state and action columns in ERSIBench G2 joint order.")
     camera_features = {feature for _, feature, _ in g2.CAMERAS}
     if {key for key, feature in features.items() if feature["dtype"] == "video"} != camera_features:
         raise ValueError(f"{root}: expected the three G2 camera video features.")
