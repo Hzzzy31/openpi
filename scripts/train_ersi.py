@@ -36,7 +36,12 @@ def main() -> None:
     parser.add_argument("--init-from", type=pathlib.Path, required=True)
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--batch-size", type=int, default=base.batch_size)
-    parser.add_argument("--save-interval", type=int, default=0, help="Use 0 to save only the final checkpoint.")
+    parser.add_argument(
+        "--save-interval",
+        type=int,
+        default=0,
+        help="Save after each interval of updates. Use 0 for the final checkpoint only.",
+    )
     parser.add_argument("--keep-period", type=int, help="Defaults to the effective save interval.")
     parser.add_argument("--peak-lr", type=float, default=schedule.peak_lr)
     parser.add_argument("--warmup-steps", type=int, default=schedule.warmup_steps)

@@ -6,7 +6,7 @@ import dataclasses
 import difflib
 import logging
 import pathlib
-from typing import Any, Literal, Protocol, TypeAlias
+from typing import Any, ClassVar, Literal, Protocol, TypeAlias
 
 import etils.epath as epath
 import flax.nnx as nnx
@@ -490,6 +490,9 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
+    # Existing OpenPI checkpoints use the loop index as their directory name.
+    checkpoint_step_offset: ClassVar[int] = 0
+
     # Name of the config. Must be unique. Will be used to reference this config.
     name: tyro.conf.Suppress[str]
     # Project name.
@@ -572,6 +575,15 @@ class TrainConfig:
             raise ValueError("--exp_name must be set")
         return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
 
+    def checkpoint_step_to_save(self, step: int, start_step: int) -> int | None:
+        """Return the checkpoint directory number after the update at loop index `step`."""
+        checkpoint_step = step + self.checkpoint_step_offset
+        if (checkpoint_step % self.save_interval == 0 and checkpoint_step > start_step) or (
+            step == self.num_train_steps - 1
+        ):
+            return checkpoint_step
+        return None
+
     @property
     def trainable_filter(self) -> nnx.filterlib.Filter:
         """Get the filter for the trainable parameters."""
@@ -584,6 +596,9 @@ class TrainConfig:
 
 @dataclasses.dataclass(frozen=True)
 class ERSIG2TrainConfig(TrainConfig):
+    # RSI checkpoint IDs count completed optimizer updates. Orbax also uses this number for keep_period.
+    checkpoint_step_offset: ClassVar[int] = 1
+
     # The RSI service assigns an exact run directory for Orbax checkpoints.
     output_dir: str | None = None
 
